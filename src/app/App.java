@@ -32,8 +32,16 @@ public class App extends AdvancedRobot{
     @Override
     public void onScannedRobot(ScannedRobotEvent event) {
 
-        // atira quando encontra inimigo
-        fire(1.5);
+        // calcula quanto a arma precisa girar
+        double giroArma = getHeading() + event.getBearing() - getGunHeading();
+
+        // gira a arma na direção do inimigo
+        setTurnGunRight(giroArma);
+
+        // só atira se a arma já estiver quase alinhada
+        if (Math.abs(giroArma) < 10) {
+            setFire(1.5);
+        }
     }
     
 }
