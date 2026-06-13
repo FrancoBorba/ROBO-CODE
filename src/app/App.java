@@ -2,38 +2,46 @@ package app;
 
 import robocode.AdvancedRobot;
 import robocode.ScannedRobotEvent;
+import app.radar.ControllerRadar; // Importa o seu módulo de radar
+import java.awt.Graphics2D;
 
-public class App extends AdvancedRobot{
+public class App extends AdvancedRobot {
     
-        @Override
+    private ControllerRadar radar;
+
+    @Override
     public void run() {
+       
+        // Initialize the radar
+        radar = new ControllerRadar(this);
 
-        // radar independente
-        setAdjustRadarForGunTurn(true);
+      
+        setAdjustRadarForGunTurn(true); // The radar does not follow the gun
+        setAdjustGunForRobotTurn(true); // THe gun does not follow the tanl
 
-        // arma independente
-        setAdjustGunForRobotTurn(true);
+        // Turn to right until find the enemy
+        setTurnRadarRightRadians(Double.POSITIVE_INFINITY);
 
+        // Loop principal limpo (State Machine)
         while (true) {
-
-            // movimentação
-            setAhead(150);
-
-            // virar
-            setTurnRight(45);
-
-            // radar girando
-            setTurnRadarRight(360);
-
-            execute();
+            // O método scan() é exigido pelo Multiplier Lock para manter o radar ativo
+            scan();
         }
     }
 
     @Override
     public void onScannedRobot(ScannedRobotEvent event) {
+        // Alimenta o seu radar com os dados do inimigo escaneado
+        radar.update(event);
 
-        // atira quando encontra inimigo
-        fire(1.5);
+        // (No futuro, suas classes de tiro e movimento também serão chamadas aqui)
     }
-    
+
+    @Override
+    public void onPaint(Graphics2D g) {
+        // Desenha a linha verde e o alvo vermelho na tela do jogo
+        if (radar != null) {
+            radar.render(g);
+        }
+    }
 }
