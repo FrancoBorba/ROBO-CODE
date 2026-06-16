@@ -1,8 +1,9 @@
 package app.movement;
 
 import java.awt.Color;
-import java.util.ArrayList;
 
+import app.enemy.EnemyWave;
+import app.enemy.EnemyWaveTracker;
 import robocode.AdvancedRobot;
 import robocode.HitByBulletEvent;
 import robocode.ScannedRobotEvent;
@@ -11,50 +12,26 @@ import robocode.util.Utils;
 public class EvasionManager {
     
     private final AdvancedRobot robot;
+    private final EnemyWaveTracker waveTracker;
     
     // Memória do sistema
-    private double energiaAnterior = 100.0;
     private int direcaoMovel = 1; 
 
     // O "Banco de Dados" do Aprendizado de Máquina (31 blocos de memória)
     private static int[] estatisticasPerigo = new int[31];
-    
-    private ArrayList<OndaInimiga> ondasAtivas = new ArrayList<>();
 
-    public EvasionManager(AdvancedRobot robot) {
+    public EvasionManager(AdvancedRobot robot, EnemyWaveTracker waveTracker) {
         this.robot = robot;
+        this.waveTracker = waveTracker;
     }
 
     public void update(ScannedRobotEvent e) {
-        double energiaAtual = e.getEnergy();
-        double quedaEnergia = energiaAnterior - energiaAtual;
-        
         double anguloAbsolutoInimigo = robot.getHeadingRadians() + e.getBearingRadians();
-        double inimigoX = robot.getX() + Math.sin(anguloAbsolutoInimigo) * e.getDistance();
-        double inimigoY = robot.getY() + Math.cos(anguloAbsolutoInimigo) * e.getDistance();
 
-        //  DETECTOR DE TIRO 
-        if (quedaEnergia > 0.0 && quedaEnergia <= 3.0) {
-            robot.setBodyColor(Color.MAGENTA); 
-            
-            OndaInimiga novaOnda = new OndaInimiga();
-            novaOnda.origemX = inimigoX;
-            novaOnda.origemY = inimigoY;
-            novaOnda.tempoCriacao = robot.getTime() - 1; 
-            novaOnda.potenciaBala = quedaEnergia;
-            novaOnda.velocidadeBala = 20 - (3 * quedaEnergia);
-            novaOnda.anguloDireto = anguloAbsolutoInimigo + Math.PI; 
-            
-            ondasAtivas.add(novaOnda);
-        }
+        // O SURF: usa a onda mais próxima detectada pelo módulo compartilhado.
+        EnemyWave ondaMaisProxima = waveTracker.getClosestWave();
 
-        //  ATUALIZADOR DE ONDAS 
-        atualizarOndas();
-
-        //  O SURF (
-        if (!ondasAtivas.isEmpty()) {
-            OndaInimiga ondaMaisProxima = ondasAtivas.get(0);
-            
+        if (ondaMaisProxima != null) {
             double perigoFrente = preverPerigo(ondaMaisProxima, 1);
             double perigoTras = preverPerigo(ondaMaisProxima, -1);
 
@@ -66,7 +43,6 @@ public class EvasionManager {
         }
 
         // CONTROLE DE DISTÂNCIA DINÂMICO
-
         double distancia = e.getDistance();
         double anguloAtaque = Math.PI / 2; // Começa assumindo 90 graus (Órbita lateral perfeita)
         
@@ -77,7 +53,7 @@ public class EvasionManager {
             anguloAtaque += 0.4; // Abre a curva para fugir de inimigos kamikazes
         }
 
-        //  APLICA A MOVIMENTAÇÃO E O WALL SMOOTHING
+        // APLICA A MOVIMENTAÇÃO E O WALL SMOOTHING
         double anguloDesejado = anguloAbsolutoInimigo + (anguloAtaque * direcaoMovel); 
         
         // Chama a função blindada contra batidas na parede
@@ -88,29 +64,12 @@ public class EvasionManager {
         // Passa a velocidade máxima e garante o movimento
         robot.setMaxVelocity(8.0);
         robot.setAhead(100 * direcaoMovel);
-
-        energiaAnterior = energiaAtual;
     }
 
-    // MÉTODOS  DO SURF
+    // MÉTODOS DO SURF
 
-
-    private void atualizarOndas() {
-        for (int i = 0; i < ondasAtivas.size(); i++) {
-            OndaInimiga onda = ondasAtivas.get(i);
-            double tempoDecorrido = robot.getTime() - onda.tempoCriacao;
-            double distanciaPercorrida = tempoDecorrido * onda.velocidadeBala;
-            double distanciaParaNos = Math.hypot(onda.origemX - robot.getX(), onda.origemY - robot.getY());            
-            
-            if (distanciaPercorrida > distanciaParaNos + 50) {
-                ondasAtivas.remove(i);
-                i--;
-            }
-        }
-    }
-
-    private double preverPerigo(OndaInimiga onda, int direcaoTestada) {
-        double anguloTeste = onda.anguloDireto + (Math.PI / 2) * direcaoTestada;
+    private double preverPerigo(EnemyWave onda, int direcaoTestada) {
+        double anguloTeste = onda.directAngle + (Math.PI / 2) * direcaoTestada;
         double xFuturo = robot.getX() + Math.sin(anguloTeste) * 150 * direcaoTestada;
         double yFuturo = robot.getY() + Math.cos(anguloTeste) * 150 * direcaoTestada;
         int indicePerigo = obterIndiceEstatistico(onda, xFuturo, yFuturo);
@@ -120,36 +79,41 @@ public class EvasionManager {
     public void registrarDano(HitByBulletEvent e) {
         robot.setBodyColor(Color.RED); 
         
-        if (!ondasAtivas.isEmpty()) {
-            OndaInimiga ondaQueAcertou = ondasAtivas.get(0);
+        EnemyWave ondaQueAcertou = waveTracker.getClosestWave();
+
+        if (ondaQueAcertou != null) {
             double xDano = e.getBullet().getX();
             double yDano = e.getBullet().getY();
             
             int indicePunido = obterIndiceEstatistico(ondaQueAcertou, xDano, yDano);
             estatisticasPerigo[indicePunido]++;
             
-            System.out.println(String.format("[IA SURFER] Risco na zona %d subiu para %d", indicePunido, estatisticasPerigo[indicePunido]));            
-            ondasAtivas.remove(0);
+            System.out.println(String.format(
+                "[IA SURFER] Risco na zona %d subiu para %d",
+                indicePunido,
+                estatisticasPerigo[indicePunido]
+            ));
+
+            waveTracker.removeWave(ondaQueAcertou);
         }
     }
 
-    private int obterIndiceEstatistico(OndaInimiga onda, double x, double y) {
-        double anguloAteAlvo = Utils.normalAbsoluteAngle(Math.atan2(x - onda.origemX, y - onda.origemY));
-        double diferencaAngulo = Utils.normalRelativeAngle(anguloAteAlvo - onda.anguloDireto);
-        double anguloMaximoEscape = Math.asin(8.0 / onda.velocidadeBala);
+    private int obterIndiceEstatistico(EnemyWave onda, double x, double y) {
+        double anguloAteAlvo = Utils.normalAbsoluteAngle(Math.atan2(x - onda.originX, y - onda.originY));
+        double diferencaAngulo = Utils.normalRelativeAngle(anguloAteAlvo - onda.directAngle);
+        double anguloMaximoEscape = Math.asin(8.0 / onda.bulletSpeed);
         double guessFactor = diferencaAngulo / anguloMaximoEscape;
         int indice = (int) Math.round((guessFactor * 15) + 15);
         return Math.max(0, Math.min(30, indice));
     }
 
-    //  ALGORITMO DE WALL SMOOTHING 
+    // ALGORITMO DE WALL SMOOTHING 
     private double aplicarWallSmoothing(double xAtual, double yAtual, double anguloDesejado, int orientacaoMovel) {
-        // CORREÇÃO: Margem aumentada de 40 para 55! (18 pixels do tanque + espaço de frenagem)
+        // Margem: 18 pixels do tanque + espaço de frenagem
         double margem = 55.0; 
         double stick = 160.0; // Distância do "sensor de ré"
         double campoL = robot.getBattleFieldWidth();
         double campoA = robot.getBattleFieldHeight();
-
 
         int loopProtector = 0;
 
@@ -157,8 +121,7 @@ public class EvasionManager {
         while (!trajetoriaSegura(xAtual + Math.sin(anguloDesejado) * stick * orientacaoMovel, 
                                  yAtual + Math.cos(anguloDesejado) * stick * orientacaoMovel, 
                                  campoL, campoA, margem) && loopProtector < 100) {
-                                     
-            // O segredo matemático: Girar a favor da orientação de movimento faz o robô deslizar na borda
+            // Girar a favor da orientação de movimento faz o robô deslizar na borda
             anguloDesejado += orientacaoMovel * 0.1; 
             loopProtector++;
         }
@@ -167,16 +130,5 @@ public class EvasionManager {
 
     private boolean trajetoriaSegura(double xTest, double yTest, double L, double A, double margem) {
         return xTest > margem && xTest < L - margem && yTest > margem && yTest < A - margem;
-    }
-
-    // ==========================================
-    // 📦 ESTRUTURA DE DADOS DA ONDA
-    // ==========================================
-    class OndaInimiga {
-        double origemX, origemY;
-        long tempoCriacao;
-        double velocidadeBala;
-        double potenciaBala;
-        double anguloDireto;
     }
 }
