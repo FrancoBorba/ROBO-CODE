@@ -1,24 +1,29 @@
 package app;
 
-import robocode.AdvancedRobot;
-import robocode.ScannedRobotEvent;
-import robocode.HitByBulletEvent; 
+import java.awt.Graphics2D;
+
+import app.enemy.EnemyWaveTracker;
+import app.movement.EvasionManager;
 import app.radar.ControllerRadar;
 import app.targeting.ControllerGun;
-import app.movement.EvasionManager; 
-import java.awt.Graphics2D;
+import robocode.AdvancedRobot;
+import robocode.BulletHitBulletEvent;
+import robocode.HitByBulletEvent;
+import robocode.ScannedRobotEvent;
 
 public class App extends AdvancedRobot {
     
     private ControllerRadar radar;
     private ControllerGun gun;
-    private EvasionManager movimento; // Nova variável
+    private EvasionManager movimento;
+    private EnemyWaveTracker waveTracker;
 
     @Override
     public void run() {
+        waveTracker = new EnemyWaveTracker(this);
         radar = new ControllerRadar(this);
-        gun = new ControllerGun(this);
-        movimento = new EvasionManager(this); // Instanciando
+        gun = new ControllerGun(this, waveTracker);
+        movimento = new EvasionManager(this, waveTracker);
 
         setAdjustRadarForGunTurn(true);
         setAdjustGunForRobotTurn(true);
@@ -31,23 +36,28 @@ public class App extends AdvancedRobot {
 
     @Override
     public void onScannedRobot(ScannedRobotEvent event) {
-        // 1. Radar trava no inimigo
+        // 1. Centraliza a detecção dos tiros inimigos.
+        waveTracker.update(event);
+
+        // 2. Radar trava no inimigo.
         radar.update(event);
         
-        // 2. A arma calcula e atira (O mestre do Ataque agora tem liberdade total)
-        // Aqui já implementamos a transição de Ataque/Defesa que você pediu!
-        boolean modoAtaqueAtivo = event.getEnergy() < (getEnergy() / 2.0) || event.getDistance() < 150;
-        double potencia = modoAtaqueAtivo ? 3.0 : 0.1; // Se tiver vantagem, bate forte. Senão, só sangra o inimigo.
-        gun.update(event, potencia);
+        // 3. A arma decide entre bullet shield e ataque normal.
+        gun.update(event);
         
-        // 3. As esteiras preparam a esquiva
+        // 4. O movimento usa as mesmas ondas para evasão.
         movimento.update(event);
     }
 
     @Override
     public void onHitByBullet(HitByBulletEvent event) {
-        // Se formos atingidos, o módulo de movimento anota a falha para aprender
         movimento.registrarDano(event);
+    }
+
+    @Override
+    public void onBulletHitBullet(BulletHitBulletEvent event) {
+        waveTracker.onBulletHitBullet(event);
+        System.out.println("[BULLET SHIELD] Nossa bala colidiu com uma bala inimiga.");
     }
 
     @Override
