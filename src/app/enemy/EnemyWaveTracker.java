@@ -32,17 +32,29 @@ public class EnemyWaveTracker {
         double energyDrop = previousEnemyEnergy - currentEnemyEnergy;
 
         double absoluteBearing = robot.getHeadingRadians() + e.getBearingRadians();
-        double enemyX = robot.getX() + Math.sin(absoluteBearing) * e.getDistance();
-        double enemyY = robot.getY() + Math.cos(absoluteBearing) * e.getDistance();
+        double currentEnemyX = robot.getX() + Math.sin(absoluteBearing) * e.getDistance();
+        double currentEnemyY = robot.getY() + Math.cos(absoluteBearing) * e.getDistance();
 
         if (isEnemyFire(energyDrop)) {
+          
+            double enemyHeading = e.getHeadingRadians();
+            double enemyVelocity = e.getVelocity();
+            
+            double realOriginX = currentEnemyX - (Math.sin(enemyHeading) * enemyVelocity);
+            double realOriginY = currentEnemyY - (Math.cos(enemyHeading) * enemyVelocity);
+            
+            // O ângulo exato e verdadeiro da bala vindo na nossa direção
+            double realDirectAngle = Utils.normalAbsoluteAngle(Math.atan2(robot.getX() - realOriginX, robot.getY() - realOriginY));
+
             EnemyWave wave = new EnemyWave(
-                enemyX,
-                enemyY,
-                robot.getTime() - 1,
+                realOriginX,
+                realOriginY,
+                robot.getTime() - 1, // Compensação de tempo (Perfeito)
                 energyDrop,
                 Rules.getBulletSpeed(energyDrop),
-                Utils.normalAbsoluteAngle(absoluteBearing + Math.PI)
+                realDirectAngle,      // Compensação espacial aplicada
+                e.getDistance(),
+                robot.getVelocity()
             );
 
             waves.add(wave);

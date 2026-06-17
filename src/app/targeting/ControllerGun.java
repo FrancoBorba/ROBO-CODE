@@ -8,40 +8,25 @@ import robocode.Rules;
 import robocode.ScannedRobotEvent;
 import robocode.util.Utils;
 
-/**
- * Controla o ataque do robô.
- *
- * Estratégia atual:
- * 1. Se o Bullet Shield estiver habilitado pela DefenseStrategyManager, tenta interceptar
- *    apenas quando a onda inimiga é realmente interceptável.
- * 2. Caso contrário (escudo em fallback, onda inválida ou tiro fraco), usa ataque normal
- *    com potência dinâmica.
- * 3. O ataque normal usa mira direta para alvos muito próximos/parados e mira linear
- *    para inimigos em movimento.
- */
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+
 public class ControllerGun {
 
     private static final double SHIELD_POWER = 0.1;
     private static final double MAX_GUN_ERROR = Math.toRadians(2.0);
-
-    // Faixa em que o shield costuma ser mais viável. Muito perto: não dá tempo.
-    // Muito longe: a previsão da bala inimiga fica pouco confiável.
-    private static final double MIN_SHIELD_DISTANCE = 80.0;
-    private static final double MAX_SHIELD_DISTANCE = 240.0;
-
-    // Evita que o bullet shield roube a mira quando a arma teria que girar demais.
-    private static final double MAX_SHIELD_GUN_TURN = Math.toRadians(25.0);
-
-    // Só vale priorizar shield contra tiros minimamente relevantes.
-    // Contra tiros muito fracos, geralmente é melhor continuar atacando.
-    private static final double MIN_ENEMY_BULLET_POWER_TO_SHIELD = 1.0;
-
-    private static final double ROBOT_HALF_SIZE = 18.0;
-    private static final int MAX_PREDICTION_TICKS = 80;
+    private static final double MAX_SHIELD_GUN_TURN = Math.toRadians(45.0); 
+    private static final double MIN_ENEMY_BULLET_POWER_TO_SHIELD = 0.5; 
 
     private final AdvancedRobot robot;
     private final EnemyWaveTracker waveTracker;
     private final DefenseStrategyManager defense;
+
+    // 🧠 BANCO DE DADOS SEGMENTADO COM DECAIMENTO (DOUBLE)
+    private static Map<String, double[][][]> gunStats = new HashMap<>();
+    
+    private ArrayList<GunWave> activeWaves = new ArrayList<>();
 
     public ControllerGun(AdvancedRobot robot, EnemyWaveTracker waveTracker, DefenseStrategyManager defense) {
         this.robot = robot;
@@ -49,94 +34,79 @@ public class ControllerGun {
         this.defense = defense;
     }
 
-    /**
-     * Método principal do ataque.
-     *
-     * Prioridade:
-     * 1. Se o Bullet Shield estiver habilitado e houver uma bala inimiga perigosa,
-     *    tentar interceptá-la.
-     * 2. Caso contrário, usar o ataque normal contra o robô inimigo.
-     */
+    private double[] getStats(String enemyName, double distance, double velocity) {
+        if (!gunStats.containsKey(enemyName)) {
+            gunStats.put(enemyName, new double[5][3][31]); 
+        }
+        int distIdx = Math.min(4, (int)(distance / 150.0));
+        int velIdx = Math.min(2, (int)(Math.abs(velocity) / 3.0));
+        return gunStats.get(enemyName)[distIdx][velIdx];
+    }
+
     public void update(ScannedRobotEvent e) {
-        if (defense.isShieldEnabled() && tentarBulletShield()) {
-            return;
-        }
-
-        atacarInimigo(e, calcularPotenciaAtaque(e));
+        update(e, calcularPotenciaAtaque(e));
     }
 
-    /**
-     * Mantém compatibilidade com a assinatura antiga usada pelo App anterior.
-     */
     public void update(ScannedRobotEvent e, double firePower) {
+        atualizarOndasDeTiro(e);
+        
+        double potenciaReal = normalizarPotencia(firePower, e);
+        criarOndaVirtual(e, potenciaReal);
+
         if (defense.isShieldEnabled() && tentarBulletShield()) {
             return;
         }
 
-        atacarInimigo(e, normalizarPotencia(firePower, e));
+        atacarInimigo(e, potenciaReal);
     }
 
-    /**
-     * Tenta interceptar uma bala inimiga com uma bala nossa.
-     *
-     * Retorna true somente quando o shield assumiu prioridade da arma.
-     * Se a situação não for boa para shield, retorna false e libera o ataque normal.
-     */
-    private boolean tentarBulletShield() {
-        EnemyWave wave = waveTracker.getClosestWave();
-
-        if (wave == null || robot.getEnergy() <= SHIELD_POWER + 0.2) {
-            return false;
-        }
-
-        if (wave.bulletPower < MIN_ENEMY_BULLET_POWER_TO_SHIELD) {
-            return false;
-        }
-
-        double remainingDistance = wave.getRemainingDistanceTo(
-            robot.getX(), robot.getY(), robot.getTime()
-        );
-
-        if (remainingDistance < MIN_SHIELD_DISTANCE || remainingDistance > MAX_SHIELD_DISTANCE) {
-            return false;
-        }
-
-        double targetAngle = calcularAnguloInterceptacaoBala(wave);
-        double gunTurn = Utils.normalRelativeAngle(targetAngle - robot.getGunHeadingRadians());
-
-        if (Math.abs(gunTurn) > MAX_SHIELD_GUN_TURN) {
-            return false;
-        }
-
-        defense.registerShieldAttempt();
-
-        robot.setTurnGunRightRadians(gunTurn);
-
-        if (robot.getGunHeat() == 0 && Math.abs(gunTurn) < MAX_GUN_ERROR) {
-            robot.setFireBullet(SHIELD_POWER);
-            System.out.println("[BULLET SHIELD] Disparo defensivo executado.");
-        }
-
-        return true;
+    private void criarOndaVirtual(ScannedRobotEvent e, double firePower) {
+        double absoluteBearing = robot.getHeadingRadians() + e.getBearingRadians();
+        GunWave novaOnda = new GunWave();
+        novaOnda.origemX = robot.getX();
+        novaOnda.origemY = robot.getY();
+        novaOnda.directAngle = absoluteBearing;
+        novaOnda.bulletSpeed = Rules.getBulletSpeed(firePower);
+        novaOnda.fireTime = robot.getTime();
+        novaOnda.fireDistance = e.getDistance();
+        novaOnda.fireVelocity = e.getVelocity();
+        
+        double enemyHeading = e.getHeadingRadians();
+        novaOnda.lateralDirection = (Math.sin(enemyHeading - absoluteBearing) * novaOnda.fireVelocity < 0) ? -1 : 1;
+        
+        activeWaves.add(novaOnda);
     }
 
-    private double calcularAnguloInterceptacaoBala(EnemyWave wave) {
-        double enemyBulletDistance = wave.getDistanceTraveled(robot.getTime());
-        double remainingDistance = wave.getRemainingDistanceTo(
-            robot.getX(), robot.getY(), robot.getTime()
-        );
+    private void atualizarOndasDeTiro(ScannedRobotEvent e) {
+        double absoluteBearing = robot.getHeadingRadians() + e.getBearingRadians();
+        double enemyX = robot.getX() + Math.sin(absoluteBearing) * e.getDistance();
+        double enemyY = robot.getY() + Math.cos(absoluteBearing) * e.getDistance();
 
-        double ourBulletSpeed = Rules.getBulletSpeed(SHIELD_POWER);
+        for (int i = 0; i < activeWaves.size(); i++) {
+            GunWave onda = activeWaves.get(i);
+            double distPercorrida = (robot.getTime() - onda.fireTime) * onda.bulletSpeed;
+            double distAteInimigo = Math.hypot(enemyX - onda.origemX, enemyY - onda.origemY);
 
-        // As balas se aproximam uma da outra. Esta é uma aproximação simples,
-        // suficiente para um primeiro bullet shield competitivo.
-        double ticksUntilIntercept = remainingDistance / (wave.bulletSpeed + ourBulletSpeed);
-        double enemyFutureDistance = enemyBulletDistance + (wave.bulletSpeed * ticksUntilIntercept);
-
-        double targetX = wave.originX + Math.sin(wave.directAngle) * enemyFutureDistance;
-        double targetY = wave.originY + Math.cos(wave.directAngle) * enemyFutureDistance;
-
-        return Math.atan2(targetX - robot.getX(), targetY - robot.getY());
+            if (distPercorrida > distAteInimigo - 18) {
+                double anguloAteInimigo = Utils.normalAbsoluteAngle(Math.atan2(enemyX - onda.origemX, enemyY - onda.origemY));
+                double diferencaAngulo = Utils.normalRelativeAngle(anguloAteInimigo - onda.directAngle);
+                double anguloMaxEscape = Math.asin(8.0 / onda.bulletSpeed);
+                
+                double gf = (diferencaAngulo / anguloMaxEscape) * onda.lateralDirection;
+                int index = (int) Math.round((gf * 15) + 15);
+                index = Math.max(0, Math.min(30, index));
+                
+                // ALGORITMO DO ESQUECIMENTO (FLATTENER)
+                double[] stats = getStats(e.getName(), onda.fireDistance, onda.fireVelocity);
+                for (int j = 0; j < stats.length; j++) {
+                    stats[j] *= 0.85; 
+                }
+                stats[index] += 1.0;
+                
+                activeWaves.remove(i);
+                i--;
+            }
+        }
     }
 
     private void atacarInimigo(ScannedRobotEvent e, double firePower) {
@@ -145,107 +115,107 @@ public class ControllerGun {
 
         robot.setTurnGunRightRadians(gunTurn);
 
-        if (robot.getGunHeat() == 0
-                && firePower >= Rules.MIN_BULLET_POWER
-                && robot.getEnergy() > firePower
-                && Math.abs(gunTurn) < MAX_GUN_ERROR) {
+        if (robot.getGunHeat() == 0 && firePower >= Rules.MIN_BULLET_POWER && robot.getEnergy() > firePower && Math.abs(gunTurn) < MAX_GUN_ERROR) {
             robot.setFireBullet(firePower);
         }
     }
 
-    /**
-     * Escolhe a mira:
-     * - mira direta quando o inimigo está muito perto ou praticamente parado;
-     * - mira linear quando o inimigo está em movimento.
-     */
     private double calcularAnguloDeMira(ScannedRobotEvent e, double firePower) {
         if (e.getDistance() < 120 || Math.abs(e.getVelocity()) < 0.2) {
-            return calcularMiraDireta(e);
+            return robot.getHeadingRadians() + e.getBearingRadians();
+        }
+        return calcularMiraGuessFactor(e, firePower);
+    }
+
+    private double calcularMiraGuessFactor(ScannedRobotEvent e, double firePower) {
+        double[] stats = getStats(e.getName(), e.getDistance(), e.getVelocity());
+        int melhorIndice = 15; 
+        double maiorFrequencia = -1.0;
+        
+        for (int i = 0; i < stats.length; i++) {
+            if (stats[i] > maiorFrequencia) {
+                maiorFrequencia = stats[i];
+                melhorIndice = i;
+            }
         }
 
-        return calcularMiraLinear(e, firePower);
-    }
-
-    private double calcularMiraDireta(ScannedRobotEvent e) {
-        return robot.getHeadingRadians() + e.getBearingRadians();
-    }
-
-    /**
-     * Linear targeting: prevê onde o inimigo estará quando a bala chegar,
-     * assumindo que ele manterá heading e velocidade atuais.
-     */
-    private double calcularMiraLinear(ScannedRobotEvent e, double firePower) {
-        double absoluteBearing = robot.getHeadingRadians() + e.getBearingRadians();
+        double gf = (melhorIndice - 15) / 15.0;
         double bulletSpeed = Rules.getBulletSpeed(firePower);
-
-        double predictedX = robot.getX() + Math.sin(absoluteBearing) * e.getDistance();
-        double predictedY = robot.getY() + Math.cos(absoluteBearing) * e.getDistance();
-
-        double enemyHeading = e.getHeadingRadians();
+        double maxEscape = Math.asin(8.0 / bulletSpeed);
+        double absoluteBearing = robot.getHeadingRadians() + e.getBearingRadians();
+        
+        int lateralDirection = 1;
         double enemyVelocity = e.getVelocity();
-
-        int tick = 0;
-
-        while ((++tick) * bulletSpeed < distancia(robot.getX(), robot.getY(), predictedX, predictedY)
-                && tick < MAX_PREDICTION_TICKS) {
-            predictedX += Math.sin(enemyHeading) * enemyVelocity;
-            predictedY += Math.cos(enemyHeading) * enemyVelocity;
-
-            predictedX = limitar(predictedX, ROBOT_HALF_SIZE, robot.getBattleFieldWidth() - ROBOT_HALF_SIZE);
-            predictedY = limitar(predictedY, ROBOT_HALF_SIZE, robot.getBattleFieldHeight() - ROBOT_HALF_SIZE);
+        if (enemyVelocity != 0) {
+            double enemyHeading = e.getHeadingRadians();
+            lateralDirection = (Math.sin(enemyHeading - absoluteBearing) * enemyVelocity < 0) ? -1 : 1;
         }
 
-        return Math.atan2(predictedX - robot.getX(), predictedY - robot.getY());
+        return absoluteBearing + (gf * maxEscape * lateralDirection);
     }
 
-    /**
-     * Potência dinâmica para equilibrar dano e gasto de energia.
-     */
+    private boolean tentarBulletShield() {
+        EnemyWave wave = waveTracker.getClosestWave();
+        if (wave == null || robot.getEnergy() <= SHIELD_POWER + 0.2) return false;
+        if (wave.bulletPower < MIN_ENEMY_BULLET_POWER_TO_SHIELD) return false;
+
+        double tempoDecorrido = robot.getTime() - wave.fireTime;
+        double currentBulletX = wave.originX + Math.sin(wave.directAngle) * (tempoDecorrido * wave.bulletSpeed);
+        double currentBulletY = wave.originY + Math.cos(wave.directAngle) * (tempoDecorrido * wave.bulletSpeed);
+
+        double distToBullet = Math.hypot(robot.getX() - currentBulletX, robot.getY() - currentBulletY);
+        double ourBulletSpeed = Rules.getBulletSpeed(SHIELD_POWER); 
+        double interceptionTime = distToBullet / (ourBulletSpeed + wave.bulletSpeed); 
+        
+        double futureBulletX = currentBulletX + Math.sin(wave.directAngle) * (wave.bulletSpeed * interceptionTime);
+        double futureBulletY = currentBulletY + Math.cos(wave.directAngle) * (wave.bulletSpeed * interceptionTime);
+
+        double targetAngle = Math.atan2(futureBulletX - robot.getX(), futureBulletY - robot.getY());
+        double gunTurn = Utils.normalRelativeAngle(targetAngle - robot.getGunHeadingRadians());
+
+        if (Math.abs(gunTurn) > MAX_SHIELD_GUN_TURN) return false;
+        robot.setTurnGunRightRadians(gunTurn);
+
+        double ticksToAlign = Math.ceil(Math.abs(Math.toDegrees(gunTurn)) / 20.0);
+        double ticksToCool = Math.ceil(robot.getGunHeat() / robot.getGunCoolingRate());
+        long fireTick = robot.getTime() + (long) Math.max(ticksToAlign, ticksToCool);
+        
+        if (wave.getDistanceTraveled(fireTick) >= (Math.hypot(robot.getX() - wave.originX, robot.getY() - wave.originY) - 18.0)) return false;
+
+        if (robot.getGunHeat() == 0.0 && Math.abs(gunTurn) < Math.toRadians(1.0)) {
+            robot.setFireBullet(SHIELD_POWER);
+            defense.registerShieldAttempt();
+            return true;
+        }
+        return false;
+    }
+
     private double calcularPotenciaAtaque(ScannedRobotEvent e) {
         double distancia = e.getDistance();
+        double velocidade = Math.abs(e.getVelocity());
         double potencia;
 
-        if (distancia < 150) {
-            potencia = 3.0;
-        } else if (distancia < 300) {
-            potencia = 2.2;
-        } else if (distancia < 500) {
-            potencia = 1.5;
-        } else {
-            potencia = 1.0;
-        }
+        if (distancia < 150) potencia = 3.0;
+        else if (distancia > 300 && velocidade > 4.0) potencia = 1.9; // Smart Firepower: Velocidade > Dano
+        else potencia = 2.4 - (distancia / 1000.0);
 
-        // Conserva energia quando estamos em situação ruim.
-        if (robot.getEnergy() < 10) {
-            potencia = Math.min(potencia, 0.7);
-        } else if (robot.getEnergy() < 20) {
-            potencia = Math.min(potencia, 1.2);
-        }
-
-        // Evita gastar potência alta para finalizar inimigo com pouca energia.
-        if (e.getEnergy() < 4.0) {
-            potencia = Math.min(potencia, Math.max(Rules.MIN_BULLET_POWER, e.getEnergy() / 4.0));
-        }
+        if (robot.getEnergy() < 30) potencia = Math.min(potencia, robot.getEnergy() / 15.0);
+        if (e.getEnergy() < 4.0) potencia = Math.min(potencia, Math.max(Rules.MIN_BULLET_POWER, e.getEnergy() / 4.0));
 
         return normalizarPotencia(potencia, e);
     }
 
     private double normalizarPotencia(double potencia, ScannedRobotEvent e) {
-        double limitePorEnergia = Math.max(Rules.MIN_BULLET_POWER, robot.getEnergy() - 0.1);
-        double limitePorInimigo = e.getEnergy() > 0 ? Math.max(Rules.MIN_BULLET_POWER, e.getEnergy()) : Rules.MIN_BULLET_POWER;
-
-        double normalizada = Math.min(potencia, Rules.MAX_BULLET_POWER);
-        normalizada = Math.min(normalizada, limitePorEnergia);
-        normalizada = Math.min(normalizada, limitePorInimigo);
-
-        return limitar(normalizada, Rules.MIN_BULLET_POWER, Rules.MAX_BULLET_POWER);
+        return Math.min(Math.min(potencia, Rules.MAX_BULLET_POWER), Math.max(Rules.MIN_BULLET_POWER, robot.getEnergy() - 0.1));
     }
 
-    private double limitar(double valor, double minimo, double maximo) {
-        return Math.max(minimo, Math.min(maximo, valor));
-    }
-
-    private double distancia(double x1, double y1, double x2, double y2) {
-        return Math.hypot(x2 - x1, y2 - y1);
+    class GunWave {
+        double origemX, origemY;
+        long fireTime;
+        double bulletSpeed;
+        double directAngle;
+        int lateralDirection; 
+        double fireDistance; 
+        double fireVelocity; 
     }
 }

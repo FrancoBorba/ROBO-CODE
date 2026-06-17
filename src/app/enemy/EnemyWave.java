@@ -1,12 +1,5 @@
 package app.enemy;
 
-/**
- * Representa uma onda/bala disparada pelo inimigo.
- *
- * No Robocode, a bala inimiga não é visível diretamente. Por isso, estimamos
- * sua existência observando a queda de energia do adversário e guardamos os
- * dados necessários para movimento evasivo e bullet shield.
- */
 public class EnemyWave {
     public final double originX;
     public final double originY;
@@ -15,14 +8,20 @@ public class EnemyWave {
     public final double bulletSpeed;
     public final double directAngle;
 
+    public final double fireDistance;
+    public final double fireVelocity;
+
     public EnemyWave(double originX, double originY, long fireTime,
-                     double bulletPower, double bulletSpeed, double directAngle) {
+                     double bulletPower, double bulletSpeed, double directAngle,
+                     double fireDistance, double fireVelocity) {
         this.originX = originX;
         this.originY = originY;
         this.fireTime = fireTime;
         this.bulletPower = bulletPower;
         this.bulletSpeed = bulletSpeed;
         this.directAngle = directAngle;
+        this.fireDistance = fireDistance;
+        this.fireVelocity = fireVelocity;
     }
 
     public double getDistanceTraveled(long currentTime) {

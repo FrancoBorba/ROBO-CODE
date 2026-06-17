@@ -38,19 +38,15 @@ public class App extends AdvancedRobot {
         }
     }
 
-    @Override
+@Override
     public void onScannedRobot(ScannedRobotEvent event) {
-        // 1. Centraliza a detecção dos tiros inimigos.
         waveTracker.update(event);
 
-        // 2. Radar trava no inimigo.
         radar.update(event);
         
-        // 3. A arma decide entre bullet shield e ataque normal, consultando a DefenseStrategyManager.
-        gun.update(event);
-        
-        // 4. O movimento usa as mesmas ondas para evasão (WaveSurfing, fallback natural do escudo).
         movement.update(event);
+        
+        gun.update(event);
     }
 
     @Override
